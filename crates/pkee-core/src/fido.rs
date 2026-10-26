@@ -84,10 +84,7 @@ impl Authenticator for HidAuthenticator {
             .user_entity(&user)
             .extensions(&[CredExt::HmacSecret(Some(true))])
             .build();
-        let att = self
-            .dev
-            .make_credential_with_args(&args)
-            .context("makeCredential")?;
+        let att = with_uv_retries(|| self.dev.make_credential_with_args(&args)).context("makeCredential")?;
         if !att.flags.user_verified_result {
             bail!("authenticator created the credential without user verification");
         }
@@ -122,10 +119,7 @@ impl Authenticator for HidAuthenticator {
             .credential_id(cred_id)
             .extensions(&[AssertExt::HmacSecret(Some(*salt))])
             .build();
-        let assertions = self
-            .dev
-            .get_assertion_with_args(&args)
-            .context("getAssertion")?;
+        let assertions = with_uv_retries(|| self.dev.get_assertion_with_args(&args)).context("getAssertion")?;
         let ass = assertions
             .first()
             .ok_or_else(|| anyhow!("getAssertion returned no assertion"))?;
@@ -141,6 +135,21 @@ impl Authenticator for HidAuthenticator {
                 _ => None,
             })
             .ok_or_else(|| anyhow!("authenticator returned no hmac-secret output"))
+    }
+}
+
+/// Fingerprint attempts per request, like sudo's pam_fprintd.
+const UV_ATTEMPTS: usize = 3;
+
+/// Repeat `op` while the finger isn't recognised: built-in UV fails with
+/// CTAP2_ERR_UV_INVALID ("the platform should retry") on a bad scan.
+fn with_uv_retries<T>(mut op: impl FnMut() -> Result<T>) -> Result<T> {
+    let mut attempt = 1;
+    loop {
+        match op() {
+            Err(e) if attempt < UV_ATTEMPTS && format!("{e:#}").contains("CTAP2_ERR_UV_INVALID") => attempt += 1,
+            result => return result,
+        }
     }
 }
 
