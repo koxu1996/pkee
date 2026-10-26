@@ -1,4 +1,10 @@
-//! pkee command line: key slots and database checks.
+//! pkee: fingerprint-unlocked KeePass launcher. Without a command it opens the
+//! popup; the commands manage key slots and script the agent.
+
+mod agent;
+mod clip;
+mod proto;
+mod ui;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -8,7 +14,9 @@ use pkee_core::slot::{self, Slot, Slots};
 use std::io::{IsTerminal as _, Read as _, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use pkee_core::search::Searcher;
+use proto::{Client, Field, Request, Response};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -17,11 +25,38 @@ struct Cli {
     #[arg(long, env = "PKEE_DB", global = true)]
     db: Option<PathBuf>,
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Open the search popup (the default).
+    Ui,
+    /// Copy (or print) a field of the best match for QUERY.
+    Get {
+        query: String,
+        #[arg(long, value_enum, default_value = "password")]
+        field: Field,
+        /// Print to stdout instead of copying.
+        #[arg(long)]
+        print: bool,
+    },
+    /// Show whether the agent is unlocked.
+    Status,
+    /// Lock the agent now.
+    Lock,
+    /// Run the agent in the foreground (normally started on demand).
+    Agent {
+        /// Lock after this many seconds without use.
+        #[arg(long, default_value_t = 600)]
+        idle: u64,
+        /// Lock this many seconds after unlocking, used or not.
+        #[arg(long, default_value_t = 8 * 3600)]
+        max: u64,
+        /// Clear a copied secret from the clipboard after this many seconds.
+        #[arg(long, default_value_t = 20)]
+        clear_after: u64,
+    },
     /// Generate the database key file and the first slot on this device.
     Init {
         /// Where to write the key file (KeePass XML 2.0). Keep it as your backup.
@@ -77,7 +112,30 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let db = cli.db.context("no database: pass --db or set PKEE_DB")?;
     let slots = Slots::for_db(&db);
-    match cli.cmd {
+    match cli.cmd.unwrap_or(Cmd::Ui) {
+        Cmd::Ui => ui::run(db),
+        Cmd::Get { query, field, print } => get(&db, &query, field, print),
+        Cmd::Status => {
+            let client = Client::connect_or_spawn(&db)?;
+            match client.call(&Request::Status)? {
+                Response::Status { unlocked: true } => println!("unlocked"),
+                _ => println!("locked"),
+            }
+            Ok(())
+        }
+        Cmd::Lock => {
+            Client::connect_or_spawn(&db)?.call(&Request::Lock)?;
+            eprintln!("locked");
+            Ok(())
+        }
+        Cmd::Agent { idle, max, clear_after } => agent::run(
+            &db,
+            agent::Config {
+                idle: Duration::from_secs(idle),
+                max: Duration::from_secs(max),
+                clear_after: Duration::from_secs(clear_after),
+            },
+        ),
         Cmd::Init { keyfile_out, enrol } => init(&db, &slots, &keyfile_out, &enrol),
         Cmd::Slot(SlotCmd::List) => list(&slots),
         Cmd::Slot(SlotCmd::Add { keyfile, enrol }) => {
@@ -119,6 +177,30 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `pkee get`: the same ranking as the popup, best match only.
+fn get(db: &Path, query: &str, field: Field, print: bool) -> Result<()> {
+    let client = Client::connect_or_spawn(db)?;
+    if let Response::Status { unlocked: false } = client.call(&Request::Status)? {
+        eprintln!("unlocking: approve and touch the sensor…");
+        client.call(&Request::Unlock)?;
+    }
+    let Response::Entries { entries, frecency } = client.call(&Request::Entries)? else {
+        bail!("unexpected reply from agent");
+    };
+    let ranked = Searcher::default().rank(&entries, query, |i| frecency[i]);
+    let Some(&best) = ranked.first() else { bail!("no entry matches {query:?}") };
+    let e = &entries[best];
+    let uuid = e.uuid.clone();
+    if print {
+        if let Response::Value(v) = client.call(&Request::Reveal { uuid, field })? {
+            println!("{v}");
+        }
+    } else if let Response::Copied { clear_after_secs } = client.call(&Request::Copy { uuid, field })? {
+        eprintln!("copied {} of {:?}; clears in {clear_after_secs}s", field.name(), e.title);
+    }
+    Ok(())
 }
 
 fn init(db: &Path, slots: &Slots, keyfile_out: &Path, enrol: &Enrol) -> Result<()> {

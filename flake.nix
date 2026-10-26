@@ -16,6 +16,8 @@
           buildInputs = [ pkgs.systemd ];
           # Second CTAP client, for cross-checking: fido2-token -L / -I.
           packages = [ pkgs.libfido2 ];
+          # winit and glutin dlopen these at runtime (same as gitkay's wrapper).
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.wayland pkgs.libxkbcommon pkgs.libGL ];
         };
       });
     };

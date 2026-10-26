@@ -2,14 +2,13 @@
 //!
 //! Each use adds 1 to a score that halves every [`HALF_LIFE`]: an entry used
 //! daily stays near the top, one used a lot last year fades. Stored per
-//! database in `$XDG_STATE_HOME/pkee/`, keyed by entry UUID, outside the KDBX
+//! database (see [`crate::paths::frecency_file`]), keyed by entry UUID, outside the KDBX
 //! so using an entry never rewrites (and re-syncs) the database.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Seconds for a score to halve.
 pub const HALF_LIFE: f64 = 7.0 * 24.0 * 3600.0;
@@ -72,17 +71,6 @@ impl Frecency {
         std::fs::write(&tmp, serde_json::to_string(self)?).with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
     }
-}
-
-/// `$XDG_STATE_HOME/pkee/frecency-<hash of the database path>.json`.
-pub fn path_for(db: &Path) -> Result<PathBuf> {
-    let state = match std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".local/state"),
-    };
-    let db = std::fs::canonicalize(db).unwrap_or_else(|_| db.to_owned());
-    let hash = hex::encode(&Sha256::digest(db.as_os_str().as_encoded_bytes())[..8]);
-    Ok(state.join("pkee").join(format!("frecency-{hash}.json")))
 }
 
 pub fn now() -> u64 {

@@ -1,7 +1,7 @@
 //! What the launcher shows: entry metadata, never secrets.
 
 use keepass::Database;
-use keepass::db::GroupRef;
+use keepass::db::{EntryId, GroupId, GroupRef};
 use serde::{Deserialize, Serialize};
 
 /// One database entry as listed and searched. Passwords, notes and OTP secrets
@@ -31,16 +31,21 @@ impl EntryMeta {
 
 /// All entries outside the recycle bin, in tree order.
 pub fn list(db: &Database) -> Vec<EntryMeta> {
+    list_with_ids(db).into_iter().map(|(meta, _)| meta).collect()
+}
+
+/// [`list`], with the ids to look the entries up again (`Database::entry`).
+pub fn list_with_ids(db: &Database) -> Vec<(EntryMeta, EntryId)> {
     let bin = db.recycle_bin().map(|g| g.id());
     let mut out = Vec::new();
     walk(db.root(), "", bin, &mut out);
     out
 }
 
-fn walk(group: GroupRef<'_>, path: &str, bin: Option<keepass::db::GroupId>, out: &mut Vec<EntryMeta>) {
+fn walk(group: GroupRef<'_>, path: &str, bin: Option<GroupId>, out: &mut Vec<(EntryMeta, EntryId)>) {
     for e in group.entries() {
         let field = |v: Option<&str>| v.unwrap_or_default().to_owned();
-        out.push(EntryMeta {
+        let meta = EntryMeta {
             uuid: e.id().uuid().hyphenated().to_string(),
             title: field(e.get_title()),
             username: field(e.get_username()),
@@ -49,7 +54,8 @@ fn walk(group: GroupRef<'_>, path: &str, bin: Option<keepass::db::GroupId>, out:
             tags: e.tags.clone(),
             has_password: e.get_password().is_some_and(|p| !p.is_empty()),
             has_otp: e.get_raw_otp_value().is_some_and(|o| !o.is_empty()),
-        });
+        };
+        out.push((meta, e.id()));
     }
     for g in group.groups() {
         if Some(g.id()) == bin {

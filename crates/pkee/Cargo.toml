@@ -9,3 +9,10 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 pkee-core.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland"] }
+keepass.workspace = true
+libc = "0.2"
+serde.workspace = true
+serde_json.workspace = true
+wl-clipboard-rs = "0.9"
+zeroize.workspace = true
