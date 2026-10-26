@@ -128,7 +128,13 @@ fn init(db: &Path, slots: &Slots, keyfile_out: &Path, enrol: &Enrol) -> Result<(
     let key = KeyFile::generate()?;
     // Key file first: if enrolment fails, it is still there to retry with.
     write_keyfile(keyfile_out, &key)?;
-    add(db, slots, &key, enrol)?;
+    add(db, slots, &key, enrol).with_context(|| {
+        format!(
+            "no slot created; retry with: pkee --db {} slot add --keyfile {}",
+            db.display(),
+            keyfile_out.display()
+        )
+    })?;
     eprintln!(
         "\nNext:\n  1. Back up {kf} (print it, or copy it somewhere offline).\n  \
          2. In KeePassXC: Database > Database Security > set key file {kf}, remove the password.\n     \
