@@ -1,0 +1,11 @@
+[package]
+name = "pkee"
+description = "Fingerprint-unlocked, fuzzy-searching KeePass (KDBX) launcher for Wayland"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+pkee-core.workspace = true

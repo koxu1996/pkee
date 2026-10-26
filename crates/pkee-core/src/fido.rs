@@ -26,6 +26,10 @@ pub trait Authenticator {
     /// return its ID. `label` is the user name the authenticator shows in its
     /// prompt, e.g. "main.kdbx (MacBook Air)".
     fn create_credential(&self, label: &str) -> Result<Vec<u8>>;
+    /// Whether `cred_id` belongs to this device. Silent: no presence or
+    /// verification, so no prompt. Needed because OpenSK verifies the user
+    /// *before* looking the credential up, so a wrong guess costs a fingerprint.
+    fn owns(&self, cred_id: &[u8]) -> Result<bool>;
     /// The `hmac-secret` output for `salt` under credential `cred_id`, with user
     /// verification. Fails if the credential does not belong to this device.
     fn hmac_secret(&self, cred_id: &[u8], salt: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>>;
@@ -95,6 +99,21 @@ impl Authenticator for HidAuthenticator {
             bail!("authenticator did not enable hmac-secret for the credential");
         }
         Ok(att.credential_descriptor.id)
+    }
+
+    fn owns(&self, cred_id: &[u8]) -> Result<bool> {
+        let challenge = random::<32>()?;
+        let args = GetAssertionArgsBuilder::new(RP_ID, &challenge)
+            .credential_id(cred_id)
+            .without_pin_and_uv()
+            .without_up()
+            .build();
+        match self.dev.get_assertion_with_args(&args) {
+            Ok(_) => Ok(true),
+            // ctap-hid-fido2 only reports the CTAP status as text.
+            Err(e) if format!("{e:#}").contains("CTAP2_ERR_NO_CREDENTIALS") => Ok(false),
+            Err(e) => Err(e.context("getAssertion (probe)")),
+        }
     }
 
     fn hmac_secret(&self, cred_id: &[u8], salt: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>> {
