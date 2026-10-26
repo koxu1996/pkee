@@ -58,6 +58,7 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, db: PathBuf) -> Self {
+        theme(&cc.egui_ctx);
         let (tx, events) = channel();
         let ctx = cc.egui_ctx.clone();
         std::thread::spawn(move || {
@@ -157,94 +158,156 @@ impl App {
     }
 
     fn list(&self, ui: &mut egui::Ui) {
-        let height = ui.available_height() - 28.0;
+        let height = ui.available_height() - FOOTER_HEIGHT;
         egui::ScrollArea::vertical().max_height(height).auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             for (row, &i) in self.ranked.iter().take(MAX_ROWS).enumerate() {
                 let e = &self.entries[i];
-                let selected = row == self.selected;
-                let frame = egui::Frame::NONE
-                    .inner_margin(egui::Margin::symmetric(8, 4))
-                    .corner_radius(4)
-                    .fill(if selected { ui.visuals().selection.bg_fill } else { egui::Color32::TRANSPARENT });
-                let resp = frame
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            let title = if e.title.is_empty() { "(untitled)" } else { &e.title };
-                            ui.label(RichText::new(title).strong());
-                            if !e.username.is_empty() {
-                                ui.label(RichText::new(&e.username).weak());
-                            }
-                            if e.has_otp {
-                                ui.label(RichText::new("TOTP").small().weak());
-                            }
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let place = [e.host(), e.path.as_str()]
-                                    .into_iter()
-                                    .filter(|s| !s.is_empty())
-                                    .collect::<Vec<_>>()
-                                    .join(" · ");
-                                ui.label(RichText::new(place).small().weak());
-                            });
-                        });
-                    })
-                    .response;
-                if selected {
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_HEIGHT), egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                if row == self.selected {
+                    // gitkay's selection: translucent mauve, plus an accent bar.
+                    painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(203, 166, 247, 40));
+                    painter.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())), 0.0, MAUVE);
                     resp.scroll_to_me(None);
                 }
+                let y = rect.center().y;
+                let mut x = rect.left() + 12.0;
+                let text = |s: &str, font: egui::FontId, color, x: &mut f32| {
+                    let g = painter.layout_no_wrap(s.to_owned(), font, color);
+                    painter.galley(egui::pos2(*x, y - g.size().y / 2.0), g.clone(), color);
+                    *x += g.size().x + 12.0;
+                };
+                let title = if e.title.is_empty() { "(untitled)" } else { &e.title };
+                text(title, egui::FontId::monospace(14.0), TEXT, &mut x);
+                if !e.username.is_empty() {
+                    text(&e.username, egui::FontId::monospace(12.0), SUBTEXT, &mut x);
+                }
+                if e.has_otp {
+                    text("TOTP", egui::FontId::monospace(10.0), GREEN, &mut x);
+                }
+                let place = [e.host(), e.path.as_str()]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let g = painter.layout_no_wrap(place, egui::FontId::monospace(11.0), SUBTEXT);
+                // Right-aligned, unless the left side already reaches there.
+                let px = (rect.right() - 12.0 - g.size().x).max(x);
+                painter.galley(egui::pos2(px, y - g.size().y / 2.0), g, SUBTEXT);
             }
         });
     }
+
+    /// gitkay-style search row: magnifier, frameless monospace field, match
+    /// count. Laid out by hand so the field (one text row tall) sits exactly on
+    /// the bar's vertical centre; the icon is painted, not a font glyph.
+    fn search_bar(&mut self, ui: &mut egui::Ui) {
+        let font = egui::FontId::monospace(15.0);
+        let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SEARCH_HEIGHT), egui::Sense::hover());
+        let painter = ui.painter_at(bar);
+        painter.rect_filled(bar, 6.0, SURFACE0);
+        let mid = bar.center().y;
+
+        // Magnifier: lens plus handle, centred as a whole on `mid`.
+        let lens = egui::pos2(bar.left() + 18.0, mid - 1.5);
+        let stroke = egui::Stroke::new(1.6, SUBTEXT);
+        painter.circle_stroke(lens, 5.0, stroke);
+        painter.line_segment([lens + egui::vec2(3.7, 3.7), lens + egui::vec2(7.5, 7.5)], egui::Stroke::new(2.0, SUBTEXT));
+
+        let count = painter.layout_no_wrap(
+            format!("{}/{}", self.ranked.len(), self.entries.len()),
+            egui::FontId::monospace(12.0),
+            SUBTEXT,
+        );
+        let count_w = count.size().x;
+        painter.galley(egui::pos2(bar.right() - 12.0 - count_w, mid - count.size().y / 2.0), count, SUBTEXT);
+
+        let row = ui.fonts_mut(|f| f.row_height(&font));
+        let field = egui::Rect::from_min_max(
+            egui::pos2(bar.left() + 34.0, mid - row / 2.0),
+            egui::pos2(bar.right() - 24.0 - count_w, mid + row / 2.0),
+        );
+        let search = ui.put(
+            field,
+            egui::TextEdit::singleline(&mut self.query)
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .desired_width(field.width())
+                .hint_text(RichText::new("Search title, user, URL, group…").font(font.clone()).color(SUBTEXT))
+                .font(font)
+                .text_color(TEXT),
+        );
+        search.request_focus();
+        if search.changed() {
+            self.note = None;
+            self.rerank();
+        }
+    }
+}
+
+/// Catppuccin Mocha, as in gitkay.
+const BG: egui::Color32 = egui::Color32::from_rgb(30, 30, 46);
+const SURFACE0: egui::Color32 = egui::Color32::from_rgb(49, 50, 68);
+const TEXT: egui::Color32 = egui::Color32::from_rgb(205, 214, 244);
+const SUBTEXT: egui::Color32 = egui::Color32::from_rgb(108, 112, 134);
+const MAUVE: egui::Color32 = egui::Color32::from_rgb(203, 166, 247);
+const GREEN: egui::Color32 = egui::Color32::from_rgb(166, 227, 161);
+const RED: egui::Color32 = egui::Color32::from_rgb(243, 139, 168);
+
+const SEARCH_HEIGHT: f32 = 36.0;
+const ROW_HEIGHT: f32 = 30.0;
+const FOOTER_HEIGHT: f32 = 26.0;
+
+fn theme(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = BG;
+    visuals.window_fill = BG;
+    visuals.extreme_bg_color = BG;
+    visuals.faint_bg_color = SURFACE0;
+    visuals.override_text_color = Some(TEXT);
+    visuals.text_cursor.stroke.color = MAUVE;
+    visuals.selection.bg_fill = MAUVE.gamma_multiply(0.4);
+    ctx.set_visuals(visuals);
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_events();
         let ctx = ui.ctx().clone();
-        egui::CentralPanel::default_margins().show(ui, |ui| match &self.phase {
-            Phase::Connecting => {
-                ui.label("Starting…");
-                if ctx.input(|i| i.key_pressed(Key::Escape)) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+        let close_on_esc = |ctx: &egui::Context| {
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+        };
+        let panel = egui::Frame::NONE.fill(BG).inner_margin(egui::Margin::same(10));
+        egui::CentralPanel::default_margins().frame(panel).show(ui, |ui| match &self.phase {
+            Phase::Connecting => close_on_esc(&ctx),
             Phase::Unlocking => {
+                close_on_esc(&ctx);
                 ui.vertical_centered(|ui| {
                     ui.add_space(ui.available_height() / 3.0);
-                    ui.heading("Locked");
-                    ui.label("Approve the request and touch the fingerprint sensor.");
+                    ui.label(RichText::new("Locked").size(18.0).color(TEXT));
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Approve the request and touch the fingerprint sensor.").color(SUBTEXT));
                 });
             }
             Phase::Failed(e) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
-                if ctx.input(|i| i.key_pressed(Key::Escape)) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                close_on_esc(&ctx);
+                ui.label(RichText::new(e).color(RED).monospace());
             }
             Phase::Ready => {
                 self.keys(&ctx);
-                let search = ui.add(
-                    egui::TextEdit::singleline(&mut self.query)
-                        .hint_text("Search…")
-                        .desired_width(f32::INFINITY)
-                        .font(egui::TextStyle::Heading),
-                );
-                search.request_focus();
-                if search.changed() {
-                    self.note = None;
-                    self.rerank();
-                }
-                ui.separator();
+                self.search_bar(ui);
+                ui.add_space(6.0);
                 self.list(ui);
-                ui.separator();
-                let footer = self.note.clone().unwrap_or_else(|| {
-                    format!(
-                        "{} of {}   ↵ password · ^U username · ^T TOTP · ^O open URL · esc",
-                        self.ranked.len(),
-                        self.entries.len()
-                    )
-                });
-                ui.label(RichText::new(footer).small().weak());
+                let footer = match &self.note {
+                    Some(note) => RichText::new(note).color(RED),
+                    None => RichText::new("↵ password   ^U username   ^T TOTP   ^O open URL   esc close").color(SUBTEXT),
+                };
+                ui.add_space(4.0);
+                ui.label(footer.size(11.0).monospace());
             }
         });
     }
