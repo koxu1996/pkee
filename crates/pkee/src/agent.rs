@@ -122,6 +122,12 @@ impl Agent {
                 self.record_use(&uuid);
                 Response::Copied { clear_after_secs: self.cfg.clear_after.as_secs() }
             }
+            Request::Details { uuid } => {
+                let u = self.open()?;
+                let id = *u.ids.get(&uuid).ok_or_else(|| anyhow!("no entry {uuid}"))?;
+                let e = u.db.entry(id).ok_or_else(|| anyhow!("no entry {uuid}"))?;
+                Response::Details { notes: e.get("Notes").unwrap_or_default().to_owned() }
+            }
             Request::Reveal { uuid, field } => {
                 let value = self.value(&uuid, field)?;
                 self.record_use(&uuid);

@@ -21,6 +21,8 @@ pub enum Request {
     Copy { uuid: String, field: Field },
     /// Return a field's value, for scripts (`pkee get --print`).
     Reveal { uuid: String, field: Field },
+    /// What the details view shows beyond the listing: the notes.
+    Details { uuid: String },
     Lock,
 }
 
@@ -52,6 +54,7 @@ pub enum Response {
     /// On the clipboard until replaced, or cleared after `clear_after_secs`.
     Copied { clear_after_secs: u64 },
     Value(String),
+    Details { notes: String },
     Locked,
     Error(String),
 }

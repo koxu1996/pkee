@@ -54,6 +54,14 @@ struct App {
     selected: usize,
     /// Message for the footer (e.g. "no TOTP for this entry").
     note: Option<String>,
+    /// The details view, when open (Enter); Esc goes back to the list.
+    details: Option<Details>,
+}
+
+struct Details {
+    /// Index into `entries`.
+    entry: usize,
+    notes: String,
 }
 
 impl App {
@@ -82,6 +90,7 @@ impl App {
             ranked: Vec::new(),
             selected: 0,
             note: None,
+            details: None,
         }
     }
 
@@ -107,9 +116,9 @@ impl App {
         }
     }
 
-    /// Run `field` on the selected entry. Copies close the window.
-    fn act(&mut self, ctx: &egui::Context, field: Field) {
-        let (Some(client), Some(&i)) = (&self.client, self.ranked.get(self.selected)) else { return };
+    /// Run `field` on entry `i`. Copies close the window.
+    fn act(&mut self, ctx: &egui::Context, i: usize, field: Field) {
+        let Some(client) = &self.client else { return };
         let uuid = self.entries[i].uuid.clone();
         let result = if field == Field::Url {
             client.call(&Request::Reveal { uuid, field }).and_then(|r| match r {
@@ -125,35 +134,120 @@ impl App {
         }
     }
 
+    fn open_details(&mut self, i: usize) {
+        let Some(client) = &self.client else { return };
+        let uuid = self.entries[i].uuid.clone();
+        match client.call(&Request::Details { uuid }) {
+            Ok(Response::Details { notes }) => {
+                self.note = None;
+                self.details = Some(Details { entry: i, notes });
+            }
+            Ok(other) => self.note = Some(format!("unexpected reply {other:?}")),
+            Err(e) => self.note = Some(format!("{e:#}")),
+        }
+    }
+
     fn keys(&mut self, ctx: &egui::Context) {
         let consume = |m, k| ctx.input_mut(|i| i.consume_key(m, k));
+        let current = match &self.details {
+            Some(d) => Some(d.entry),
+            None => self.ranked.get(self.selected).copied(),
+        };
         if consume(Modifiers::NONE, Key::Escape) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            if self.details.take().is_none() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             return;
         }
-        let last = self.ranked.len().saturating_sub(1);
-        if consume(Modifiers::NONE, Key::ArrowDown) || consume(Modifiers::CTRL, Key::N) {
-            self.selected = (self.selected + 1).min(last);
+        if self.details.is_none() {
+            let last = self.ranked.len().saturating_sub(1);
+            if consume(Modifiers::NONE, Key::ArrowDown) || consume(Modifiers::CTRL, Key::N) {
+                self.selected = (self.selected + 1).min(last);
+            }
+            if consume(Modifiers::NONE, Key::ArrowUp) || consume(Modifiers::CTRL, Key::P) {
+                self.selected = self.selected.saturating_sub(1);
+            }
+            if consume(Modifiers::NONE, Key::PageDown) {
+                self.selected = (self.selected + 10).min(last);
+            }
+            if consume(Modifiers::NONE, Key::PageUp) {
+                self.selected = self.selected.saturating_sub(10);
+            }
+            if consume(Modifiers::NONE, Key::Enter) {
+                if let Some(i) = current {
+                    self.open_details(i);
+                }
+                return;
+            }
         }
-        if consume(Modifiers::NONE, Key::ArrowUp) || consume(Modifiers::CTRL, Key::P) {
-            self.selected = self.selected.saturating_sub(1);
+        let field = if copy_pressed(ctx) {
+            Some(Field::Password)
+        } else {
+            [(Key::B, Field::Username), (Key::T, Field::Totp), (Key::O, Field::Url)]
+                .into_iter()
+                .find(|&(k, _)| consume(Modifiers::CTRL, k))
+                .map(|(_, f)| f)
+        };
+        if let (Some(field), Some(i)) = (field, current) {
+            self.act(ctx, i, field);
         }
-        if consume(Modifiers::NONE, Key::PageDown) {
-            self.selected = (self.selected + 10).min(last);
+    }
+
+    fn details_view(&self, ui: &mut egui::Ui, d: &Details) {
+        let e = &self.entries[d.entry];
+        let title = if e.title.is_empty() { "(untitled)" } else { &e.title };
+        ui.add_space(4.0);
+        ui.label(RichText::new(title).font(egui::FontId::monospace(20.0)).color(TEXT));
+        if !e.path.is_empty() {
+            ui.label(RichText::new(&e.path).monospace().size(12.0).color(SUBTEXT));
         }
-        if consume(Modifiers::NONE, Key::PageUp) {
-            self.selected = self.selected.saturating_sub(10);
-        }
-        let action = [
-            (Modifiers::NONE, Key::Enter, Field::Password),
-            (Modifiers::CTRL, Key::U, Field::Username),
-            (Modifiers::CTRL, Key::T, Field::Totp),
-            (Modifiers::CTRL, Key::O, Field::Url),
-        ]
-        .into_iter()
-        .find(|&(m, k, _)| consume(m, k));
-        if let Some((_, _, field)) = action {
-            self.act(ctx, field);
+        ui.add_space(12.0);
+
+        let mono = |s: &str, color| RichText::new(s).font(egui::FontId::monospace(14.0)).color(color);
+        let key = |s: &str| RichText::new(s).monospace().size(11.0).color(SUBTEXT);
+        let or_none = |s: &str| if s.is_empty() { "—".to_owned() } else { s.to_owned() };
+        egui::Grid::new("details").num_columns(3).spacing([16.0, 10.0]).show(ui, |ui| {
+            ui.label(key("username"));
+            ui.label(mono(&or_none(&e.username), TEXT));
+            ui.label(key("^B copy"));
+            ui.end_row();
+
+            ui.label(key("password"));
+            ui.label(mono(if e.has_password { "••••••••••••" } else { "—" }, TEXT));
+            ui.label(key(if e.has_password { "^C copy" } else { "" }));
+            ui.end_row();
+
+            ui.label(key("url"));
+            ui.label(mono(&or_none(&e.url), TEXT));
+            ui.label(key(if e.url.is_empty() { "" } else { "^O open" }));
+            ui.end_row();
+
+            if e.has_otp {
+                ui.label(key("totp"));
+                ui.label(mono("yes", GREEN));
+                ui.label(key("^T copy code"));
+                ui.end_row();
+            }
+            if !e.tags.is_empty() {
+                ui.label(key("tags"));
+                ui.label(mono(&e.tags.join(", "), TEXT));
+                ui.label("");
+                ui.end_row();
+            }
+        });
+
+        if !d.notes.is_empty() {
+            ui.add_space(14.0);
+            ui.label(key("notes"));
+            ui.add_space(4.0);
+            egui::Frame::NONE.fill(SURFACE0).corner_radius(6).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height() - FOOTER_HEIGHT - 20.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.label(mono(&d.notes, TEXT).size(13.0));
+                    });
+            });
         }
     }
 
@@ -299,18 +393,41 @@ impl eframe::App for App {
             }
             Phase::Ready => {
                 self.keys(&ctx);
-                self.search_bar(ui);
-                ui.add_space(6.0);
-                self.list(ui);
+                let hints = match self.details.take() {
+                    Some(d) => {
+                        self.details_view(ui, &d);
+                        self.details = Some(d);
+                        "^C password   ^B username   ^T TOTP   ^O open URL   esc back"
+                    }
+                    None => {
+                        self.search_bar(ui);
+                        ui.add_space(6.0);
+                        self.list(ui);
+                        "↵ details   ^C password   ^B username   ^T TOTP   ^O open URL   esc close"
+                    }
+                };
+                // Footer pinned to the bottom edge, whatever the view's height.
                 let footer = match &self.note {
                     Some(note) => RichText::new(note).color(RED),
-                    None => RichText::new("↵ password   ^U username   ^T TOTP   ^O open URL   esc close").color(SUBTEXT),
+                    None => RichText::new(hints).color(SUBTEXT),
                 };
-                ui.add_space(4.0);
-                ui.label(footer.size(11.0).monospace());
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.label(footer.size(11.0).monospace());
+                });
             }
         });
     }
+}
+
+/// Ctrl+C: egui-winit turns it into `Event::Copy` (for copying selected
+/// text), not a key press, so take those events out before the search field
+/// sees them.
+fn copy_pressed(ctx: &egui::Context) -> bool {
+    ctx.input_mut(|i| {
+        let before = i.events.len();
+        i.events.retain(|e| !matches!(e, egui::Event::Copy));
+        i.events.len() != before || i.consume_key(Modifiers::CTRL, Key::C)
+    })
 }
 
 /// Connect (starting the agent if needed), unlock if locked, fetch entries.
