@@ -11,6 +11,7 @@ use pkee_core::entries::EntryMeta;
 use pkee_core::search::Searcher;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
+use std::time::{Duration, Instant};
 
 /// Rows to lay out; the rest is a search away.
 const MAX_ROWS: usize = 200;
@@ -52,8 +53,11 @@ struct App {
     query: String,
     ranked: Vec<usize>,
     selected: usize,
-    /// Message for the footer (e.g. "no TOTP for this entry").
+    /// Error for the footer (e.g. "no TOTP for this entry"), until the next
+    /// keystroke in the search field or a successful action.
     note: Option<String>,
+    /// "copied …" confirmation, shown in the footer for [`TOAST_FOR`].
+    toast: Option<(String, Instant)>,
     /// The details view, when open (Enter); Esc goes back to the list.
     details: Option<Details>,
 }
@@ -90,6 +94,7 @@ impl App {
             ranked: Vec::new(),
             selected: 0,
             note: None,
+            toast: None,
             details: None,
         }
     }
@@ -116,20 +121,29 @@ impl App {
         }
     }
 
-    /// Run `field` on entry `i`. Copies close the window.
+    /// Run `field` on entry `i`. Copies keep the window open and say so in the
+    /// footer; opening the URL closes it (the browser takes focus anyway).
     fn act(&mut self, ctx: &egui::Context, i: usize, field: Field) {
         let Some(client) = &self.client else { return };
         let uuid = self.entries[i].uuid.clone();
         let result = if field == Field::Url {
             client.call(&Request::Reveal { uuid, field }).and_then(|r| match r {
-                Response::Value(url) => open_url(&url),
+                Response::Value(url) => open_url(&url).map(|()| None),
                 other => Err(anyhow::anyhow!("unexpected reply {other:?}")),
             })
         } else {
-            client.call(&Request::Copy { uuid, field }).map(|_| ())
+            client.call(&Request::Copy { uuid, field }).map(|r| match r {
+                Response::Copied { clear_after_secs } => Some(clear_after_secs),
+                _ => Some(0),
+            })
         };
         match result {
-            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Ok(None) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Ok(Some(secs)) => {
+                self.note = None;
+                let title = &self.entries[i].title;
+                self.toast = Some((format!("copied {} of {title} · clears in {secs}s", field.name()), Instant::now()));
+            }
             Err(e) => self.note = Some(format!("{e:#}")),
         }
     }
@@ -351,6 +365,8 @@ const GREEN: egui::Color32 = egui::Color32::from_rgb(166, 227, 161);
 const RED: egui::Color32 = egui::Color32::from_rgb(243, 139, 168);
 
 const SEARCH_HEIGHT: f32 = 36.0;
+/// How long a "copied …" confirmation stays in the footer.
+const TOAST_FOR: Duration = Duration::from_secs(3);
 const ROW_HEIGHT: f32 = 30.0;
 const FOOTER_HEIGHT: f32 = 26.0;
 
@@ -407,9 +423,16 @@ impl eframe::App for App {
                     }
                 };
                 // Footer pinned to the bottom edge, whatever the view's height.
-                let footer = match &self.note {
-                    Some(note) => RichText::new(note).color(RED),
-                    None => RichText::new(hints).color(SUBTEXT),
+                if self.toast.as_ref().is_some_and(|(_, at)| at.elapsed() >= TOAST_FOR) {
+                    self.toast = None;
+                }
+                let footer = match (&self.note, &self.toast) {
+                    (Some(note), _) => RichText::new(note).color(RED),
+                    (None, Some((toast, at))) => {
+                        ctx.request_repaint_after(TOAST_FOR.saturating_sub(at.elapsed()));
+                        RichText::new(toast).color(GREEN)
+                    }
+                    (None, None) => RichText::new(hints).color(SUBTEXT),
                 };
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.label(footer.size(11.0).monospace());
