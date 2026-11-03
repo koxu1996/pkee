@@ -53,6 +53,10 @@ struct App {
     query: String,
     ranked: Vec<usize>,
     selected: usize,
+    /// Bring the selected row into view on the next frame: set when the
+    /// keyboard moves the selection or the results change, never otherwise,
+    /// so scrolling with the mouse wheel isn't pulled back.
+    scroll_to_selected: bool,
     /// Error for the footer (e.g. "no TOTP for this entry"), until the next
     /// keystroke in the search field or a successful action.
     note: Option<String>,
@@ -93,6 +97,7 @@ impl App {
             query: String::new(),
             ranked: Vec::new(),
             selected: 0,
+            scroll_to_selected: false,
             note: None,
             toast: None,
             details: None,
@@ -103,6 +108,7 @@ impl App {
         let frecency = &self.frecency;
         self.ranked = self.searcher.rank(&self.entries, &self.query, |i| frecency[i]);
         self.selected = 0;
+        self.scroll_to_selected = true;
     }
 
     fn poll_events(&mut self) {
@@ -174,6 +180,7 @@ impl App {
             return;
         }
         if self.details.is_none() {
+            let before = self.selected;
             let last = self.ranked.len().saturating_sub(1);
             if consume(Modifiers::NONE, Key::ArrowDown) || consume(Modifiers::CTRL, Key::N) {
                 self.selected = (self.selected + 1).min(last);
@@ -186,6 +193,9 @@ impl App {
             }
             if consume(Modifiers::NONE, Key::PageUp) {
                 self.selected = self.selected.saturating_sub(10);
+            }
+            if self.selected != before {
+                self.scroll_to_selected = true;
             }
             if consume(Modifiers::NONE, Key::Enter) {
                 if let Some(i) = current {
@@ -278,7 +288,9 @@ impl App {
                     // gitkay's selection: translucent mauve, plus an accent bar.
                     painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(203, 166, 247, 40));
                     painter.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())), 0.0, MAUVE);
-                    resp.scroll_to_me(None);
+                    if self.scroll_to_selected {
+                        resp.scroll_to_me(None);
+                    }
                 }
                 let y = rect.center().y;
                 let mut x = rect.left() + 12.0;
@@ -419,6 +431,7 @@ impl eframe::App for App {
                         self.search_bar(ui);
                         ui.add_space(6.0);
                         self.list(ui);
+                        self.scroll_to_selected = false;
                         "↵ details   ^C password   ^B username   ^T TOTP   ^O open URL   esc close"
                     }
                 };
