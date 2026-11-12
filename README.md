@@ -57,8 +57,7 @@ devices: `pkee keyfile | ssh other pkee slot add --keyfile -`.
 | type | search |
 | ↑ ↓, Ctrl+N/P | move |
 | Enter | entry details (Esc: back) |
-| Ctrl+C / Ctrl+B / Ctrl+T | copy password / username / TOTP code |
-| Ctrl+O | open URL |
+| Ctrl+C / Ctrl+B / Ctrl+T / Ctrl+U | copy password / username / TOTP code / URL |
 | Esc | close |
 
 From scripts: `pkee get <query> [--field password|username|totp|url|notes] [--print]`,

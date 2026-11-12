@@ -127,25 +127,16 @@ impl App {
         }
     }
 
-    /// Run `field` on entry `i`. Copies keep the window open and say so in the
-    /// footer; opening the URL closes it (the browser takes focus anyway).
-    fn act(&mut self, ctx: &egui::Context, i: usize, field: Field) {
+    /// Copy `field` of entry `i`. The window stays open and says so in the footer.
+    fn act(&mut self, i: usize, field: Field) {
         let Some(client) = &self.client else { return };
         let uuid = self.entries[i].uuid.clone();
-        let result = if field == Field::Url {
-            client.call(&Request::Reveal { uuid, field }).and_then(|r| match r {
-                Response::Value(url) => open_url(&url).map(|()| None),
-                other => Err(anyhow::anyhow!("unexpected reply {other:?}")),
-            })
-        } else {
-            client.call(&Request::Copy { uuid, field }).map(|r| match r {
-                Response::Copied { clear_after_secs } => Some(clear_after_secs),
-                _ => Some(0),
-            })
-        };
+        let result = client.call(&Request::Copy { uuid, field }).map(|r| match r {
+            Response::Copied { clear_after_secs } => clear_after_secs,
+            _ => 0,
+        });
         match result {
-            Ok(None) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            Ok(Some(secs)) => {
+            Ok(secs) => {
                 self.note = None;
                 let title = &self.entries[i].title;
                 self.toast = Some((format!("copied {} of {title} · clears in {secs}s", field.name()), Instant::now()));
@@ -207,13 +198,13 @@ impl App {
         let field = if copy_pressed(ctx) {
             Some(Field::Password)
         } else {
-            [(Key::B, Field::Username), (Key::T, Field::Totp), (Key::O, Field::Url)]
+            [(Key::B, Field::Username), (Key::T, Field::Totp), (Key::U, Field::Url)]
                 .into_iter()
                 .find(|&(k, _)| consume(Modifiers::CTRL, k))
                 .map(|(_, f)| f)
         };
         if let (Some(field), Some(i)) = (field, current) {
-            self.act(ctx, i, field);
+            self.act(i, field);
         }
     }
 
@@ -243,7 +234,7 @@ impl App {
 
             ui.label(key("url"));
             ui.label(mono(&or_none(&e.url), TEXT));
-            ui.label(key(if e.url.is_empty() { "" } else { "^O open" }));
+            ui.label(key(if e.url.is_empty() { "" } else { "^U copy" }));
             ui.end_row();
 
             if e.has_otp {
@@ -425,14 +416,14 @@ impl eframe::App for App {
                     Some(d) => {
                         self.details_view(ui, &d);
                         self.details = Some(d);
-                        "^C password   ^B username   ^T TOTP   ^O open URL   esc back"
+                        "^C password   ^B username   ^T TOTP   ^U URL   esc back"
                     }
                     None => {
                         self.search_bar(ui);
                         ui.add_space(6.0);
                         self.list(ui);
                         self.scroll_to_selected = false;
-                        "↵ details   ^C password   ^B username   ^T TOTP   ^O open URL   esc close"
+                        "↵ details   ^C password   ^B username   ^T TOTP   ^U URL   esc close"
                     }
                 };
                 // Footer pinned to the bottom edge, whatever the view's height.
@@ -477,14 +468,4 @@ fn load(db: &std::path::Path, unlocking: impl FnOnce()) -> Result<(Client, Vec<E
         Response::Entries { entries, frecency } => Ok((client, entries, frecency)),
         other => anyhow::bail!("unexpected reply {other:?}"),
     }
-}
-
-fn open_url(url: &str) -> Result<()> {
-    std::process::Command::new("xdg-open")
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    Ok(())
 }
