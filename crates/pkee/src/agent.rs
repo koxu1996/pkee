@@ -172,6 +172,7 @@ impl Agent {
             Field::Password => e.get_password(),
             Field::Username => e.get_username(),
             Field::Url => e.get_url(),
+            Field::Notes => e.get("Notes"),
             Field::Totp => {
                 let code = e.get_otp().map_err(|err| anyhow!("TOTP: {err}"))?.value_now()?;
                 return Ok(Zeroizing::new(code.code));

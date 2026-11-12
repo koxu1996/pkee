@@ -61,7 +61,7 @@ devices: `pkee keyfile | ssh other pkee slot add --keyfile -`.
 | Ctrl+O | open URL |
 | Esc | close |
 
-From scripts: `pkee get <query> [--field password|username|totp|url] [--print]`,
+From scripts: `pkee get <query> [--field password|username|totp|url|notes] [--print]`,
 `pkee status`, `pkee lock`, `pkee slot list|add|rm`.
 
 ## Nix

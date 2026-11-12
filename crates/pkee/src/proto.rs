@@ -32,6 +32,7 @@ pub enum Field {
     Username,
     Totp,
     Url,
+    Notes,
 }
 
 impl Field {
@@ -41,6 +42,7 @@ impl Field {
             Field::Username => "username",
             Field::Totp => "TOTP code",
             Field::Url => "URL",
+            Field::Notes => "notes",
         }
     }
 }
